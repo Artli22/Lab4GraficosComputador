@@ -1,16 +1,19 @@
+mod color;
 mod controles;
 mod framebuffer;
 mod obj;
 mod triangle;
 
+use color::Relleno;
 use controles::Controles;
 use framebuffer::Framebuffer;
 use obj::Model;
 use raylib::prelude::*;
-use triangle::triangle;
+use triangle::{profundidad_en, triangle};
 
 const SCREEN_WIDTH: i32 = 1200;
 const SCREEN_HEIGHT: i32 = 800;
+const COLOR_SELECCION: Color = Color::new(255, 0, 255, 255);
 
 #[derive(Clone, Copy)]
 struct View {
@@ -26,10 +29,6 @@ fn init() -> (RaylibHandle, RaylibThread) {
         .build();
     rl.set_target_fps(60);
     (rl, thread)
-}
-
-fn set_color(framebuffer: &mut Framebuffer, color: Color) {
-    framebuffer.set_current_color(color);
 }
 
 fn project(v: Vector3, view: &View, focal: f32) -> Option<Vector3> {
@@ -54,10 +53,15 @@ fn project(v: Vector3, view: &View, focal: f32) -> Option<Vector3> {
     ))
 }
 
-fn render(framebuffer: &mut Framebuffer, model: &Model, view: &View) {
+fn render(framebuffer: &mut Framebuffer, model: &Model, view: &View, seleccionado: Option<usize>) {
     let focal = SCREEN_HEIGHT as f32;
+    let resaltado = Relleno::Solido(COLOR_SELECCION);
 
-    for tri in &model.triangles {
+    type Visible<'a> = ([Vector3; 3], [Vector2; 3], &'a Relleno);
+    let mut opacos: Vec<Visible> = Vec::new();
+    let mut translucidos: Vec<Visible> = Vec::new();
+
+    for (indice, tri) in model.triangles.iter().enumerate() {
         let projected: Vec<Vector3> = tri
             .vertices
             .iter()
@@ -65,10 +69,47 @@ fn render(framebuffer: &mut Framebuffer, model: &Model, view: &View) {
             .collect();
 
         if projected.len() == 3 {
-            set_color(framebuffer, tri.color);
-            triangle(framebuffer, projected[0], projected[1], projected[2]);
+            let pantalla = [projected[0], projected[1], projected[2]];
+            let relleno = if seleccionado == Some(indice) { &resaltado } else { &tri.relleno };
+            if relleno.es_opaco() {
+                opacos.push((pantalla, tri.uvs, relleno));
+            } else {
+                translucidos.push((pantalla, tri.uvs, relleno));
+            }
         }
     }
+
+    // Los translúcidos van al final y de atrás hacia adelante para mezclar bien
+    let profundidad = |t: &Visible| t.0[0].z + t.0[1].z + t.0[2].z;
+    translucidos.sort_by(|a, b| profundidad(b).total_cmp(&profundidad(a)));
+
+    for (pantalla, uvs, relleno) in opacos.iter().chain(translucidos.iter()) {
+        triangle(framebuffer, *pantalla, *uvs, relleno);
+    }
+}
+
+// Índice del triángulo más cercano a la cámara bajo el punto de pantalla (x, y)
+fn triangulo_en(model: &Model, view: &View, x: f32, y: f32) -> Option<usize> {
+    let focal = SCREEN_HEIGHT as f32;
+    let mut mejor: Option<(usize, f32)> = None;
+
+    for (indice, tri) in model.triangles.iter().enumerate() {
+        let projected: Vec<Vector3> = tri
+            .vertices
+            .iter()
+            .filter_map(|&v| project(v - model.center, view, focal))
+            .collect();
+        if projected.len() != 3 {
+            continue;
+        }
+        let pantalla = [projected[0], projected[1], projected[2]];
+        if let Some(depth) = profundidad_en(pantalla, x, y) {
+            if mejor.map_or(true, |(_, d)| depth < d) {
+                mejor = Some((indice, depth));
+            }
+        }
+    }
+    mejor.map(|(indice, _)| indice)
 }
 
 fn main() {
@@ -97,22 +138,37 @@ fn main() {
     };
     let mut view = vista_inicial;
     let mut controles = Controles::new();
+    let mut seleccionado: Option<usize> = None;
 
     while !rl.window_should_close() {
         let entrada = controles.leer(&rl);
         if entrada.reiniciar {
             view = vista_inicial;
         }
+        if entrada.quitar_seleccion {
+            seleccionado = None;
+        }
+        if let Some(clic) = entrada.clic {
+            seleccionado = triangulo_en(&model, &view, clic.x, clic.y);
+            if let Some(i) = seleccionado {
+                println!("[{}]", i);
+            }
+        }
         view.yaw += entrada.yaw;
         view.pitch = (view.pitch + entrada.pitch).clamp(-1.5, 1.5);
         view.distance = (view.distance - entrada.zoom * model.size * 0.1).max(1.0);
 
         framebuffer.clear();
-        render(&mut framebuffer, &model, &view);
+        render(&mut framebuffer, &model, &view, seleccionado);
 
         let mut d = rl.begin_drawing(&thread);
         framebuffer.render_buffer(&mut d);
         d.draw_fps(10, 10);
         d.draw_text("Flechas/WASD/Mouse/Stick: Rotar | Rueda/Q/E: Zoom | R: Reiniciar | ESC: Salir", 10, 30, 20, Color::WHITE);
+        let texto = match seleccionado {
+            Some(i) => format!("Triangulo [{}] (magenta) | Clic: seleccionar | C: quitar", i),
+            None => "Clic sobre un triangulo para ver su indice".to_string(),
+        };
+        d.draw_text(&texto, 10, 55, 20, Color::YELLOW);
     }
 }

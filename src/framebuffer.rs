@@ -1,3 +1,4 @@
+use crate::color::mezclar;
 use raylib::prelude::*;
 
 pub struct Framebuffer {
@@ -45,18 +46,28 @@ impl Framebuffer {
         self.zbuffer.fill(f32::INFINITY);
     }
 
-    // Pinta un píxel con el color actual solo si está más cerca que lo ya dibujado
+    // Pinta un píxel con el color actual. Si es opaco, escribe el z-buffer; si es translúcido,
+    // se mezcla con lo ya dibujado y no escribe profundidad (se dibuja después de los opacos).
     pub fn point(&mut self, x: i32, y: i32, depth: f32) {
         if x < 0 || y < 0 || x >= self.width || y >= self.height {
+            return;
+        }
+        let c = self.current_color;
+        if c.a == 0 {
             return;
         }
         let index = (y * self.width + x) as usize;
         if depth >= self.zbuffer[index] {
             return;
         }
-        self.zbuffer[index] = depth;
-        let c = self.current_color;
-        self.pixels[index * 4..index * 4 + 4].copy_from_slice(&[c.r, c.g, c.b, 255]);
+        let pixel = &mut self.pixels[index * 4..index * 4 + 4];
+        if c.a == 255 {
+            self.zbuffer[index] = depth;
+            pixel.copy_from_slice(&[c.r, c.g, c.b, 255]);
+        } else {
+            let destino = [pixel[0], pixel[1], pixel[2], pixel[3]];
+            pixel.copy_from_slice(&mezclar(c, destino));
+        }
     }
 
     pub fn render_buffer(&mut self, d: &mut RaylibDrawHandle) {

@@ -4,6 +4,8 @@ const GAMEPAD: i32 = 0;
 const ZONA_MUERTA: f32 = 0.15;
 const VELOCIDAD_ROTACION: f32 = 0.03;
 const SENSIBILIDAD_MOUSE: f32 = 0.005;
+// Píxeles máximos que se puede mover el mouse para que cuente como clic y no como arrastre
+const UMBRAL_CLIC: f32 = 4.0;
 
 #[derive(Default)]
 pub struct Entrada {
@@ -11,15 +13,19 @@ pub struct Entrada {
     pub pitch: f32,
     pub zoom: f32,
     pub reiniciar: bool,
+    // Posición del clic (botón izquierdo soltado sin arrastrar)
+    pub clic: Option<Vector2>,
+    pub quitar_seleccion: bool,
 }
 
 pub struct Controles {
     gamepad_conectado: bool,
+    inicio_clic: Option<Vector2>,
 }
 
 impl Controles {
     pub fn new() -> Self {
-        Controles { gamepad_conectado: false }
+        Controles { gamepad_conectado: false, inicio_clic: None }
     }
 
     pub fn leer(&mut self, rl: &RaylibHandle) -> Entrada {
@@ -49,11 +55,25 @@ impl Controles {
         if rl.is_key_pressed(KeyboardKey::KEY_R) {
             entrada.reiniciar = true;
         }
+        if rl.is_key_pressed(KeyboardKey::KEY_C) {
+            entrada.quitar_seleccion = true;
+        }
     }
 
-    fn leer_mouse(&self, rl: &RaylibHandle, entrada: &mut Entrada) {
+    fn leer_mouse(&mut self, rl: &RaylibHandle, entrada: &mut Entrada) {
         entrada.zoom += rl.get_mouse_wheel_move();
 
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            self.inicio_clic = Some(rl.get_mouse_position());
+        }
+        if rl.is_mouse_button_released(MouseButton::MOUSE_BUTTON_LEFT) {
+            let posicion = rl.get_mouse_position();
+            if let Some(inicio) = self.inicio_clic.take() {
+                if (posicion - inicio).length() < UMBRAL_CLIC {
+                    entrada.clic = Some(posicion);
+                }
+            }
+        }
         if rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
             let delta = rl.get_mouse_delta();
             entrada.yaw += delta.x * SENSIBILIDAD_MOUSE;
