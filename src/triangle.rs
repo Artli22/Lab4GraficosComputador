@@ -1,12 +1,12 @@
 use crate::color::Relleno;
 use crate::framebuffer::Framebuffer;
+use crate::luz::Sombreado;
 use raylib::prelude::{Vector2, Vector3};
 
 fn edge(a: Vector3, b: Vector3, px: f32, py: f32) -> f32 {
     (b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x)
 }
 
-// Profundidad del triángulo en el punto de pantalla (px, py), o None si el punto queda fuera
 pub fn profundidad_en(v: [Vector3; 3], px: f32, py: f32) -> Option<f32> {
     let [a, b, c] = v;
     let area = edge(a, b, c.x, c.y);
@@ -23,8 +23,13 @@ pub fn profundidad_en(v: [Vector3; 3], px: f32, py: f32) -> Option<f32> {
     }
 }
 
-// `v` son vértices en pantalla con z = profundidad de cámara; `uvs` y `relleno` definen el color
-pub fn triangle(framebuffer: &mut Framebuffer, v: [Vector3; 3], uvs: [Vector2; 3], relleno: &Relleno) {
+pub fn triangle(
+    framebuffer: &mut Framebuffer,
+    v: [Vector3; 3],
+    uvs: [Vector2; 3],
+    relleno: &Relleno,
+    sombreado: Sombreado,
+) {
     let [a, b, c] = v;
     let area = edge(a, b, c.x, c.y);
     if area.abs() < 1e-6 {
@@ -42,19 +47,16 @@ pub fn triangle(framebuffer: &mut Framebuffer, v: [Vector3; 3], uvs: [Vector2; 3
         for x in min_x..=max_x {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
-
-            // Coordenadas baricéntricas; el píxel está dentro si las tres son >= 0
             let w0 = edge(b, c, px, py) / area;
             let w1 = edge(c, a, px, py) / area;
             let w2 = edge(a, b, px, py) / area;
 
             if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
-                // Con perspectiva, 1/z es lineal en pantalla: sirve para profundidad y UV
                 let (p0, p1, p2) = (w0 * inv_a, w1 * inv_b, w2 * inv_c);
                 let inv_z = p0 + p1 + p2;
                 let uv = (uvs[0] * p0 + uvs[1] * p1 + uvs[2] * p2) / inv_z;
 
-                framebuffer.set_current_color(relleno.color_en(uv));
+                framebuffer.set_current_color(sombreado.aplicar(relleno.color_en(uv)));
                 framebuffer.point(x, y, 1.0 / inv_z);
             }
         }

@@ -1,12 +1,14 @@
 mod color;
 mod controles;
 mod framebuffer;
+mod luz;
 mod obj;
 mod triangle;
 
 use color::Relleno;
 use controles::Controles;
 use framebuffer::Framebuffer;
+use luz::{sombrear, Sombreado};
 use obj::Model;
 use raylib::prelude::*;
 use triangle::{profundidad_en, triangle};
@@ -31,7 +33,7 @@ fn init() -> (RaylibHandle, RaylibThread) {
     (rl, thread)
 }
 
-fn project(v: Vector3, view: &View, focal: f32) -> Option<Vector3> {
+fn rotar(v: Vector3, view: &View) -> Vector3 {
     let (sin_y, cos_y) = view.yaw.sin_cos();
     let (sin_p, cos_p) = view.pitch.sin_cos();
 
@@ -39,42 +41,70 @@ fn project(v: Vector3, view: &View, focal: f32) -> Option<Vector3> {
     let z = -v.x * sin_y + v.z * cos_y;
     let y = v.y * cos_p - z * sin_p;
     let z = v.y * sin_p + z * cos_p;
+    Vector3::new(x, y, z)
+}
 
-    let depth = view.distance - z;
+// `r` es un punto ya rotado; la cámara está en (0, 0, distance)
+fn proyectar(r: Vector3, view: &View, focal: f32) -> Option<Vector3> {
+    let depth = view.distance - r.z;
     if depth <= 0.1 {
         return None;
     }
 
     let scale = focal / depth;
     Some(Vector3::new(
-        SCREEN_WIDTH as f32 / 2.0 + x * scale,
-        SCREEN_HEIGHT as f32 / 2.0 - y * scale,
+        SCREEN_WIDTH as f32 / 2.0 + r.x * scale,
+        SCREEN_HEIGHT as f32 / 2.0 - r.y * scale,
         depth,
     ))
+}
+
+fn project(v: Vector3, view: &View, focal: f32) -> Option<Vector3> {
+    proyectar(rotar(v, view), view, focal)
+}
+
+// Sombreado de un triángulo a partir de sus vértices rotados; la normal se orienta hacia la cámara
+fn sombreado_cara(rotados: &[Vector3; 3], view: &View) -> Sombreado {
+    let normal = (rotados[1] - rotados[0]).cross(rotados[2] - rotados[0]);
+    if normal.length() < 1e-6 {
+        return Sombreado::NINGUNO;
+    }
+    let mut normal = normal.normalized();
+
+    let centro = (rotados[0] + rotados[1] + rotados[2]) / 3.0;
+    let hacia_camara = (Vector3::new(0.0, 0.0, view.distance) - centro).normalized();
+    if normal.dot(hacia_camara) < 0.0 {
+        normal = -normal;
+    }
+    sombrear(normal, hacia_camara)
 }
 
 fn render(framebuffer: &mut Framebuffer, model: &Model, view: &View, seleccionado: Option<usize>) {
     let focal = SCREEN_HEIGHT as f32;
     let resaltado = Relleno::Solido(COLOR_SELECCION);
 
-    type Visible<'a> = ([Vector3; 3], [Vector2; 3], &'a Relleno);
+    type Visible<'a> = ([Vector3; 3], [Vector2; 3], &'a Relleno, Sombreado);
     let mut opacos: Vec<Visible> = Vec::new();
     let mut translucidos: Vec<Visible> = Vec::new();
 
     for (indice, tri) in model.triangles.iter().enumerate() {
-        let projected: Vec<Vector3> = tri
-            .vertices
+        let rotados = tri.vertices.map(|v| rotar(v - model.center, view));
+        let projected: Vec<Vector3> = rotados
             .iter()
-            .filter_map(|&v| project(v - model.center, view, focal))
+            .filter_map(|&r| proyectar(r, view, focal))
             .collect();
 
         if projected.len() == 3 {
             let pantalla = [projected[0], projected[1], projected[2]];
-            let relleno = if seleccionado == Some(indice) { &resaltado } else { &tri.relleno };
-            if relleno.es_opaco() {
-                opacos.push((pantalla, tri.uvs, relleno));
+            let (relleno, sombreado) = if seleccionado == Some(indice) {
+                (&resaltado, Sombreado::NINGUNO)
             } else {
-                translucidos.push((pantalla, tri.uvs, relleno));
+                (&tri.relleno, sombreado_cara(&rotados, view))
+            };
+            if relleno.es_opaco() {
+                opacos.push((pantalla, tri.uvs, relleno, sombreado));
+            } else {
+                translucidos.push((pantalla, tri.uvs, relleno, sombreado));
             }
         }
     }
@@ -83,8 +113,8 @@ fn render(framebuffer: &mut Framebuffer, model: &Model, view: &View, seleccionad
     let profundidad = |t: &Visible| t.0[0].z + t.0[1].z + t.0[2].z;
     translucidos.sort_by(|a, b| profundidad(b).total_cmp(&profundidad(a)));
 
-    for (pantalla, uvs, relleno) in opacos.iter().chain(translucidos.iter()) {
-        triangle(framebuffer, *pantalla, *uvs, relleno);
+    for (pantalla, uvs, relleno, sombreado) in opacos.iter().chain(translucidos.iter()) {
+        triangle(framebuffer, *pantalla, *uvs, relleno, *sombreado);
     }
 }
 
